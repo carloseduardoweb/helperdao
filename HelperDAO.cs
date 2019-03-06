@@ -1,5 +1,6 @@
 
 using System;
+using System.Data;
 using System.Collections.Generic;
 using MySql.Data.MySqlClient;
 using System.Text.RegularExpressions;
@@ -15,15 +16,32 @@ namespace Util
         //Fields
         private MySqlDataReader _reader;
         private T _data;
+        private bool hasTransaction;
+        private MySqlConnection transactionalConnection;
+        private MySqlCommand transactionalCommand;
         
         //Properties
         public T data { get => _data; set => _data = value; }
         public MySqlDataReader reader { get => _reader; private set => _reader = value; }
 
-        //Constructors
+        //Constructor
         public HelperDAO(T data)
         {
             this.data = data;
+        }
+
+        //Finalizer
+        ~HelperDAO()
+        {
+            if (transactionalCommand != null)
+            {
+                transactionalCommand.Dispose();
+            }
+            
+            if (transactionalConnection != null && transactionalConnection.State != ConnectionState.Closed)
+            {
+                transactionalConnection.Close();
+            }
         }
 
 
@@ -94,32 +112,38 @@ namespace Util
 
         public int Insert(SqlBuilder sqlBuilder)
         {
-            return UseCommand(GetSingleApplication(sqlBuilder));
+            Func<MySqlCommand, int> application = GetSingleApplication(sqlBuilder);
+            return hasTransaction ? UseTransactionalCommand(application) : UseCommand(application);
         }
 
         public int Insert(SqlBuilder sqlBuilder, List<T> dataList)
         {
-            return UseCommand(GetIterativeApplication(sqlBuilder, dataList), transactional: true);
+            Func<MySqlCommand, int> application = GetIterativeApplication(sqlBuilder, dataList);
+            return hasTransaction ? UseTransactionalCommand(application) : UseCommand(application, transactional: true);
         }
 
         public int Update(SqlBuilder sqlBuilder, bool secureMode = true)
         {
-            return UseCommand(GetSingleApplication(sqlBuilder, secureMode));
+            Func<MySqlCommand, int> application = GetSingleApplication(sqlBuilder, secureMode);
+            return hasTransaction ? UseTransactionalCommand(application) : UseCommand(application);
         }
 
         public int Update(SqlBuilder sqlBuilder, List<T> dataList, bool secureMode = true)
         {
-            return UseCommand(GetIterativeApplication(sqlBuilder, dataList, secureMode), transactional: true);
+            Func<MySqlCommand, int> application = GetIterativeApplication(sqlBuilder, dataList, secureMode);
+            return hasTransaction ? UseTransactionalCommand(application) : UseCommand(application, transactional: true);
         }
 
         public int Delete(SqlBuilder sqlBuilder, bool secureMode = true)
         {
-            return UseCommand(GetSingleApplication(sqlBuilder, secureMode));
+            Func<MySqlCommand, int> application = GetSingleApplication(sqlBuilder, secureMode);
+            return hasTransaction ? UseTransactionalCommand(application) : UseCommand(application);
         }
 
         public int Delete(SqlBuilder sqlBuilder, List<T> dataList, bool secureMode = true)
         {
-            return UseCommand(GetIterativeApplication(sqlBuilder, dataList, secureMode), transactional: true);
+            Func<MySqlCommand, int> application = GetIterativeApplication(sqlBuilder, dataList, secureMode);
+            return hasTransaction ? UseTransactionalCommand(application) : UseCommand(application, transactional: true);
         }
 
         public U TryGetField<U>(Func<int, U> fieldReader, string columnName)
@@ -138,6 +162,87 @@ namespace Util
             catch (Exception ex)
             {
                 throw new Exception(ex.Message);
+            }
+        }
+
+        public void BeginTransaction()
+        {
+            if (!hasTransaction)
+            {
+                hasTransaction = true;
+                transactionalConnection = new DBConnect().Connection;
+                transactionalCommand = new MySqlCommand(null, transactionalConnection, transactionalConnection.BeginTransaction());
+                transactionalConnection.Open();
+            }
+        }
+
+        public void Commit()
+        {
+            if (!hasTransaction)
+            {
+                throw new Exception("Transaction has not started.");
+            }
+
+            try
+            {
+                transactionalCommand.Transaction.Commit();
+            }
+            catch (Exception ex)
+            {
+                try
+                {
+                    transactionalCommand.Transaction.Rollback();
+                    throw new Exception(ex.Message);
+                }
+                catch (Exception ex2)
+                {
+                    throw new Exception(ex2.Message);
+                }
+            }
+            finally
+            {
+                hasTransaction = false;
+
+                if (transactionalCommand != null)
+                {
+                    transactionalCommand.Dispose();
+                }
+                
+                if (transactionalConnection != null && transactionalConnection.State != ConnectionState.Closed)
+                {
+                    transactionalConnection.Close();
+                }
+            }
+        }
+
+        public void Rollback()
+        {
+            if (!hasTransaction)
+            {
+                throw new Exception("Transaction has not started.");
+            }
+
+            try
+            {
+                transactionalCommand.Transaction.Rollback();
+            }
+            catch (Exception ex)
+            {
+                throw new Exception(ex.Message);
+            }
+            finally
+            {
+                hasTransaction = false;
+
+                if (transactionalCommand != null)
+                {
+                    transactionalCommand.Dispose();
+                }
+                
+                if (transactionalConnection != null && transactionalConnection.State != ConnectionState.Closed)
+                {
+                    transactionalConnection.Close();
+                }
             }
         }
 
@@ -178,6 +283,11 @@ namespace Util
 
                 return application(command);
             }
+        }
+
+        private int UseTransactionalCommand(Func<MySqlCommand, int> application)
+        {
+            return application(transactionalCommand);
         }
 
         private Func<MySqlCommand, int> GetSingleApplication(SqlBuilder sqlBuilder, bool secureMode = false)
