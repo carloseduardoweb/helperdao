@@ -171,8 +171,8 @@ namespace Util
             {
                 hasTransaction = true;
                 transactionalConnection = new DBConnect().Connection;
-                transactionalCommand = new MySqlCommand(null, transactionalConnection, transactionalConnection.BeginTransaction());
                 transactionalConnection.Open();
+                transactionalCommand = new MySqlCommand(null, transactionalConnection, transactionalConnection.BeginTransaction());
             }
         }
 
